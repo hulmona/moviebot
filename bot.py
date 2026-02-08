@@ -1,21 +1,23 @@
 import asyncio
+import os
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# --- CONFIGURATION (Apnar Deoya Tottho) ---
-API_ID = 38438389
-API_HASH = "327b2592682ff56d760110350e66425e"
-BOT_TOKEN = "8539975629:AAEhIKsppQ1Jz_QWDYPzwuG0Pft9tLqemyw"
-MONGO_URI = "mongodb+srv://moviebot:Movie%4012345@cluster0.3qgtiud.mongodb.net/?retryWrites=true&w=majority"
-DB_CHANNEL_ID = -1003344239116  # Movie Database Channel
-ADMIN_ID = 7445383921 # Nijer ID ekhane boshan (Udahoron deya holo)
+# --- CONFIGURATION ---
+# Render Environment Variables theke data nibe, na thakle default gulo use korbe
+API_ID = int(os.environ.get("API_ID", 38438389))
+API_HASH = os.environ.get("API_HASH", "327b2592682ff56d760110350e66425e")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8539975629:AAEhIKsppQ1Jz_QWDYPzwuG0Pft9tLqemyw")
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://moviebot:Movie%4012345@cluster0.3qgtiud.mongodb.net/?retryWrites=true&w=majority")
+DB_CHANNEL_ID = int(os.environ.get("DB_CHANNEL_ID", -1003344239116))
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 7445383921))
 
 bot = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 db_client = AsyncIOMotorClient(MONGO_URI)
 db = db_client["Cluster0"]["files"]
 
-# --- START MESSAGE (Welcome Message) ---
+# --- START MESSAGE ---
 @bot.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     if len(message.text.split()) == 1:
@@ -24,24 +26,20 @@ async def start(client, message):
             "আমি একটি মুভি সার্চ বট। মুভি পেতে আমাদের গ্রুপে জয়েন করুন এবং মুভির নাম লিখে সার্চ করুন।"
         )
     else:
-        # Movie pathano ebong 5 minute por delete kora
         file_id = message.text.split()[1].replace("file_", "")
         try:
             sent_msg = await client.send_cached_media(chat_id=message.chat.id, file_id=file_id)
-            
             warning_msg = await message.reply_text(
                 "⚠️ **এই ফাইলটি ৫ মিনিট পর ডিলিট হয়ে যাবে। তাই জলদি অন্য কোথাও ফরওয়ার্ড করে সেখান থেকে ডাউনলোড করে নিন।**"
             )
             
-            # ৫ মিনিট (৩০০ সেকেন্ড) অপেক্ষা করে ডিলিট করবে
-            await asyncio.sleep(300)
+            await asyncio.sleep(300) # 5 Minute
             await sent_msg.delete()
             await warning_msg.delete()
-            
         except Exception as e:
             await message.reply_text(f"❌ সমস্যা হয়েছে: {e}")
 
-# --- INDEXING (Channel theke sob file database-e neyar command) ---
+# --- INDEXING COMMAND ---
 @bot.on_message(filters.command("index") & filters.user(ADMIN_ID))
 async def index_files(client, message):
     status = await message.reply_text("⏳ মুভিগুলো ডাটাবেসে সেভ করা শুরু হচ্ছে... একটু অপেক্ষা করুন।")
@@ -57,14 +55,12 @@ async def index_files(client, message):
             count += 1
     await status.edit(f"✅ কাজ শেষ! মোট {count}টি ফাইল ডাটাবেসে সেভ হয়েছে।")
 
-# --- GROUP SEARCH (Group-e movie khunje button deya) ---
+# --- GROUP SEARCH ---
 @bot.on_message(filters.group & filters.text)
 async def search(client, message):
     query = message.text
-    if len(query) < 3:
-        return 
+    if len(query) < 3: return
     
-    # Database-e movie khunja
     files = db.find({"file_name": {"$regex": query, "$options": "i"}})
     buttons = []
     
@@ -82,5 +78,6 @@ async def search(client, message):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-print("বট সফলভাবে চালু হয়েছে...")
+print("Bot is running...")
 bot.run()
+
