@@ -1,51 +1,128 @@
-import asyncio
 import os
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from motor.motor_asyncio import AsyncIOMotorClient
+import logging
+import threading
+from flask import Flask
+from threading import Thread
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from pymongo import MongoClient
+from bson import ObjectId
 
-# --- CONFIGURATION ---
-# Render Environment 
-        file_id = message.text.split()[1].replace("file_", "")
+# ===== ENV =====
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URI = os.getenv("DATABASE_URI")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "autofilter")
+PORT = int(os.environ.get("PORT", 10000))
+AUTO_DELETE_TIME = int(os.getenv("AUTO_DELETE_TIME", 300))
+MAX_BTN = int(os.getenv("MAX_BTN", 10))
+
+logging.basicConfig(level=logging.INFO)
+
+# ===== DB =====
+mongo = MongoClient(DATABASE_URI)
+db = mongo[DATABASE_NAME]
+movies = db.movies
+
+# ===== WEB SERVER =====
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is alive"
+
+def run_web():
+    app.run(host="0.0.0.0", port=PORT)
+
+# ===== AUTO DELETE =====
+def delete_later(bot, chat_id, msg_id, delay=AUTO_DELETE_TIME):
+    def delete():
         try:
-            sent_msg = await client.send_cached_media(chat_id=message.chat.id, file_id=file_id)
-            warning_msg = await message.reply_text(
-                "⚠️ **এই ফাইলটি ৫ মিনিট পর ডিলিট হয়ে যাবে। তাই জলদি অন্য কোথাও ফরওয়ার্ড করে ext("⏳ মুভিগুলো ডাটাবেসে সেভ করা শুরু হচ্ছে... একটু অপেক্ষা করুন।")
-    count = 0
-    async for user_msg in client.get_chat_history(DB_CHANNEL_ID):
-        file = user_msg.document or user_msg.video
-        if file:
-            await db.update_one(
-                {"file_id": file.file_id},
-                {"$set": {"file_name": file.file_name, "file_id": file.file_id}},
-                upsert=True
-            )
-            count += 1
-    await status.edit(f"✅ কাজ শেষ! মোট {count}টি ফাইল ডাটাবেসে সেভ হয়েছে।")
+            bot.delete_message(chat_id, msg_id)
+        except:
+            pass
+    threading.Timer(delay, delete).start()
 
-# --- GROUP SEARCH ---
-@bot.on_message(filters.group & filters.text)
-async def search(client, message):
-    query = message.text
-    if len(query) < 3: return
-    
-    files = db.find({"file_name": {"$regex": query, "$options": "i"}})
+# ===== START =====
+def start(update, context):
+    txt = """
+👋 হ্যালো!
+
+🎬 মুভির নাম লিখুন  
+আমি সার্চ করে দিব  
+
+⚠️ গুরুত্বপূর্ণ:
+ফাইল ৫ মিনিট পর ডিলিট হয়ে যাবে  
+(কপিরাইট ইস্যু)
+
+ফাইল অন্য চ্যাটে ফরওয়ার্ড করে  
+ডাউনলোড শুরু করুন।
+"""
+    update.message.reply_text(txt)
+
+# ===== SEARCH =====
+def search(update, context):
+    query = update.message.text
+    chat_id = update.message.chat_id
+
+    results = list(movies.find(
+        {"$text": {"$search": query}}
+    ).limit(MAX_BTN))
+
+    if not results:
+        update.message.reply_text("❌ মুভি পাওয়া যায়নি")
+        return
+
     buttons = []
-    
-    async for file in files.to_list(length=10):
+    for m in results:
         buttons.append([
             InlineKeyboardButton(
-                text=f"🎬 {file['file_name']}", 
-                url=f"https://t.me/{client.me.username}?start=file_{file['file_id']}"
+                m.get("title","movie"),
+                callback_data=str(m["_id"])
             )
         ])
 
-    if buttons:
-        await message.reply_text(
-            f"🔍 **আপনার সার্চ করা মুভি: {query}**\n\nনিচের বাটনে ক্লিক করে মুভিটি বট থেকে সংগ্রহ করুন।",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+    msg = update.message.reply_text(
+        "রেজাল্ট:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
-print("Bot is running...")
-bot.run()
+    delete_later(context.bot, chat_id, msg.message_id, 120)
 
+# ===== BUTTON =====
+def callback(update, context):
+    q = update.callback_query
+    q.answer()
+
+    movie = movies.find_one({"_id": ObjectId(q.data)})
+
+    caption = """
+⚠️ এই ফাইল ৫ মিনিট পর ডিলিট হবে  
+(কপিরাইট ইস্যু)
+
+দ্রুত ফরওয়ার্ড করুন।
+"""
+
+    file_msg = context.bot.send_document(
+        chat_id=q.message.chat_id,
+        document=movie["file_id"],
+        caption=caption
+    )
+
+    delete_later(context.bot, q.message.chat_id, file_msg.message_id)
+
+# ===== BOT RUN =====
+def run_bot():
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, search))
+    dp.add_handler(CallbackQueryHandler(callback))
+
+    updater.start_polling()
+    updater.idle()
+
+# ===== MAIN =====
+if __name__ == "__main__":
+    Thread(target=run_bot).start()
+    run_web()
